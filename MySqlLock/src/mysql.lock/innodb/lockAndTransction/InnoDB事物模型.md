@@ -1,0 +1,152 @@
+* [返回上一级](../InnoDB锁与事物模型.md)
+
+在InnoDB事物模型中，目标是将传统两阶段锁和多版本数据库的优点结合起来。InnoDB默认在行级别上加锁，以不加锁的一致性读运query语句。
+
+## 事物隔离级别
+事物隔离是数据库运行的基础。隔离就是ACID中的I；在多个事物同时进行更改和查询的时候，隔离级别是对性能和操作结果可靠性、一致性、可重复性二者平衡的一种调节
+手段。
+
+InnoDB提供四种隔离级别
+* **READUNCOMMITTED**
+* **READ COMMITTED**
+* **REPEATABLE READ**
+* **SERIALIZABLE**
+
+InnoDB默认为**REPEATABLE READ**级别。
+
+用户可以通过`SET
+TRANSACTION`语句更改单个会话或者后续所有会话的隔离级别。要想改变数据库默认的隔离级别，请使用`--transaction-isolation`命令或者在配置文件中修改。
+
+InnoDB通过不同的锁定策略，来支持不同的隔离级别。对于关键数据，例如必须满足ACID原则的数据，可以使用默认的**REPEATABLE
+READ**级别来保证数据的高度一致性。对于一致性保证和可重复性保证二者的重要性没有锁开销重要时，可以使用**READ
+COMMITED**甚至是**READ UNCOMMITTED**级别。
+
+以下讨论了四种隔离级别，按照最常使用到最少使用排序：
+* **REPEATABLE READ**
+
+    这是InnoDB默认的隔离级别。同一个事物的一致性读，通过这个事物第一次读取时创建的快照来保证。这意味着如果在同一个事物中发出多个（非锁定）`SELECT`语句，每个`SELECT`的查询结果始终保持一致。
+
+    对于锁定读（`SELECT ... FOR UPDATE`或者`LOCK IN SHARE
+    MODE`)、`UPDATE`和`DELETE`语句，锁定是依赖于查询条件中是否使用了唯一索引，可以是唯一的查询条件，也可以是范围查询条件，只要使用了唯一索引就可以。
+
+  *   对于使用唯一查询条件，InnoDB只锁定找到的索引记录行，而不是这条记录之前的区间。
+  *   对于其它条件，InnoDB使用**GAP LOCK**或**NEXT-KEY
+      LOCK**锁定扫面到的索引区间，阻塞其它会话对这个区间的插入。
+* **READ COMMITTED**
+
+    每一次一致性读，即使是同一个事物中的多次读取，都会使用最新的快照。
+
+    对于锁定读（`SELECT ... FOR UPDATE`或者`LOCK IN SHARE
+    MODE`)、`UPDATE`和`DELETE`语句,InnoDB只锁定了索引记录，并没有锁定区间，因此允许在锁定记录旁边自由的插入新数据。区间锁只用于外键检查和重复键检查。
+
+    由于区间锁不能使用，因此可能出现幻读。
+
+    此隔离级别下，只能使用基于行的二进制日志。如果参数配置为`binlog_format=MIXED`，服务器自动使用基于行的日志。
+
+    使用**READ COMMITTED**还有其它影响：
+
+  *   对于`UPDATE`和`DELETE`语句，InnoDB只锁定更新或删除的行。在MySQL评估完WHERE条件后，不满足的行上的锁将会释放掉，着大大降低了死锁的可能性，但是加锁操作不可避免。
+  *   对于`UPDATE`语句，如果一行已经被锁定，InnoDB执行“半一致性”读，返回最后一次提交的版本，MySQL判断是否满足更新条件，如果满足，则MySQL再次读取此行数据，然后对数据加锁或者是阻塞。
+
+    设想以下场景：
+
+    ~~~
+    CREATE TABLE t (a INT NOT NULL, b INT) ENGINE = InnoDB;
+    INSERT INTO t VALUES (1,2),(2,3),(3,2),(4,3),(5,2);
+    COMMIT;
+    ~~~
+
+    在这个例子中，表没有索引，所以记录锁定时的查询和索引扫描将会使用隐藏的聚簇索引。
+
+    假设有个会话执行了以下更新语句：
+
+    ~~~
+    # Session A
+    START TRANSACTION;
+    UPDATE t SET b = 5 WHERE b = 3;
+    ~~~
+
+    假设有第二个会话执行了以下的更新语句：
+
+    ~~~
+    # Session B
+    UPDATE t SET b = 4 WHERE b = 2;
+    ~~~
+
+    当InnoDB执行每个`UPDATE`操作时，首先获取它读取到的每一行数据的排他锁，然后决定是否修改这一行数据。如果InnoDB不需要修改这一行，就释放掉锁。否则就一直持有锁到事物结束。
+
+    当使用默认的**REPEATABLE READ**级别时，获取读取到的每一行数据的锁并且不释放：
+
+    ~~~
+    x-lock(1,2); retain x-lock
+    x-lock(2,3); update(2,3) to (2,5); retain x-lock
+    x-lock(3,2); retain x-lock
+    x-lock(4,3); update(4,3) to (4,5); retain x-lock
+    x-lock(5,2); retain x-lock
+    ~~~
+
+    第二个更新操作尝试获取锁的时候被阻塞，知道第一个更新操作提交或回滚：
+
+    ~~~
+    x-lock(1,2); block and wait for first UPDATE to commit or roll back
+    ~~~
+
+    如果使用**READ
+    COMMITTED**隔离级别，第一个更新语句获取它读取到每一行数据的锁，并且释放那些不需要更新的数据的锁：
+
+    ~~~
+    x-lock(1,2); unlock(1,2)
+    x-lock(2,3); update(2,3) to (2,5); retain x-lock
+    x-lock(3,2); unlock(3,2)
+    x-lock(4,3); update(4,3) to (4,5); retain x-lock
+    x-lock(5,2); unlock(5,2)
+    ~~~
+
+    第二个更新操作，InnoDB先进行一次“半一致性”读，获取最后一次提交的版本，然后MySQL判断这一行数据是否满足更新的条件：
+
+    ~~~
+    x-lock(1,2); update(1,2) to (1,4); retain x-lock
+    x-lock(2,3); unlock(2,3)
+    x-lock(3,2); update(3,2) to (3,4); retain x-lock
+    x-lock(4,3); unlock(4,3)
+    x-lock(5,2); update(5,2) to (5,4); retain x-lock
+    ~~~
+
+    但是，如果WHERE条件使用了索引列，并且InnoDB使用了索引，那么在获取和持有锁的时候只考虑索引列。在下面的例子中，第一个更新获取了每行`b=2`数据的排他锁。第格尔更新被阻塞，因为它也是要获取`b=2`数据的排他锁。
+
+    ~~~
+    CREATE TABLE t (a INT NOT NULL, b INT, c INT, INDEX (b)) ENGINE = InnoDB;
+    INSERT INTO t VALUES (1,2,3),(2,2,4);
+    COMMIT;
+
+    # Session A
+    START TRANSACTION;
+    UPDATE t SET b = 3 WHERE b = 2 AND c = 3;
+
+    # Session B
+    UPDATE t SET b = 4 WHERE b = 2 AND c = 4;
+    ~~~
+
+* **READ UNCOMMITTED**
+
+    使用此隔离级别会出现脏读。
+
+* **SERIALIZABLE**
+
+    此级别类似**REPEATABLE
+    READ**，如果`autocommit`被禁用，InnoDB隐式的将`SELECT`转换成`SELECT ...
+    LOCK IN SHARE MODE`。如果`autocommit`被启用，`SELECT`有自己的事物。
+
+
+
+
+
+
+
+
+
+
+
+
+
+

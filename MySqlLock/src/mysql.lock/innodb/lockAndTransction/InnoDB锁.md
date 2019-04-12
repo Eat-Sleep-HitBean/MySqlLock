@@ -1,5 +1,4 @@
-# 14.7.1 InnoDB Locking
-
+* [返回上一级](../InnoDB锁与事物模型.md)
 ## 共享锁和排他锁
 InnoDB实现了两种标准行锁，即共享锁（S锁）和排他锁（X锁)
 
@@ -30,7 +29,7 @@ X|冲突|冲突|冲突|冲突
 IX|冲突|兼容|冲突|兼容
 S|冲突|冲突|兼容|兼容
 IS|冲突|兼容|兼容|兼容
-	
+
 一个锁请求如果和已存在的锁兼容，这个锁可以立马授予，如果和已存在的锁冲突，则这个请求必须等待直到冲突锁释放掉。如果有个请求和已存在的锁冲突并且由于deadlock一直无法被授予，会抛出异常。
 意向锁不会锁定任何内容，除了表级请求（例如:`LOCK TABLES ... WRITE`）。意向锁的主要目的时展示某个事务在表中正在锁定某行，或者将要锁定某行。
 意向锁的事务数据跟**SHOW ENGINE INNODB STATUS**和**InnoDB monitor**二者的输出类似
@@ -74,7 +73,7 @@ InnoDB以这样一种方式执行行级锁定：当它搜索或扫描表索引�
 默认情况下，InnoDB以**REPEATABLE READ**事务隔离级别运行。在这种情况下，InnoDB在搜索和索引扫描时使用了next-key lock，阻止了幻影行的出现(see Section 14.7.4, “Phantom Rows”)。
 next-key lock的事务数据可参考SHOW ENGINE INNODB STATUS和InnoDB monitor的输出:
 ```
-RECORD LOCKS space id 58 page no 3 n bits 72 index `PRIMARY` of table `test`.`t` 
+RECORD LOCKS space id 58 page no 3 n bits 72 index `PRIMARY` of table `test`.`t`
 trx id 10080 lock_mode X
 Record lock, heap no 1 PHYSICAL RECORD: n_fields 1; compact format; info bits 0
  0: len 8; hex 73757072656d756d; asc supremum;;
@@ -118,11 +117,3 @@ Record lock, heap no 3 PHYSICAL RECORD: n_fields 3; compact format; info bits 0
 ## 自增锁
 自增锁是一种特殊的表级锁，在事物试图插入有自增属性的列时获取。举个最简单的例子，如果一个事物正在向表里插入数据，其余的事物必须等待这个事物完毕，以保证第一个事物能获取连续的主键值。
 配置参数innodb_autoinc_lock_mode控制这自增锁用到的算法。这个参数可以用来在自增值的准确性与并发性之间权衡，详情可见Section 14.6.1.4, “AUTO_INCREMENT Handling in InnoDB”
-
-## 空间索引的谓词锁
-InnoDB supports SPATIAL indexing of columns containing spatial columns (see Section 11.5.8, “Optimizing Spatial Analysis”).
-To handle locking for operations involving SPATIAL indexes, next-key locking does not work well to support REPEATABLE READ or SERIALIZABLE transaction isolation levels. There is no absolute ordering concept in multidimensional data, so it is not clear which is the “next” key.
-To enable support of isolation levels for tables with SPATIAL indexes, InnoDB uses predicate locks. A SPATIAL index contains minimum bounding rectangle (MBR) values, so InnoDB enforces consistent read on the index by setting a predicate lock on the MBR value used for a query. Other transactions cannot insert or modify a row that would match the query condition.
-
-
-``
