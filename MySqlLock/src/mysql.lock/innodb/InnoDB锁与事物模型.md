@@ -2,7 +2,7 @@
 
 # InnoDB锁与事物模型
 * [InnoDB锁](./lockAndTransction/InnoDB锁.md)
-* [InnoDB事物模型](lockAndTransction/transactionModel/InnoDB事物模型.md)
+* [InnoDB事物模型](lockAndTransction/InnoDB事物模型.md)
 * [InnoDB不同SQL语句加锁](./lockAndTransction/InnoDB不同SQL语句加锁.md)
 * [InnoDB幻象行](./lockAndTransction/InnoDB幻象行.md)
 * [InnoDB死锁](./lockAndTransction/InnoDB死锁.md)
